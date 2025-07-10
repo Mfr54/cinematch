@@ -450,9 +450,12 @@ export const RecommendationFilters: React.FC<RecommendationFiltersProps> = React
               </div>
             </div>
 
-            {/* Tüm türler */}
+            {/* Diğer türler (popüler türler hariç) */}
+            <div className="mb-2">
+              <p className="text-xs text-slate-400 mb-2">Diğer Türler:</p>
+            </div>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto">
-              {sortedGenres.map((genre) => (
+              {sortedGenres.filter(genre => ![28, 35, 18, 878, 10765, 27, 10749, 53].includes(genre.id)).map((genre) => (
                 <button
                   key={genre.id}
                   onClick={() => toggleGenre(genre.id)}
