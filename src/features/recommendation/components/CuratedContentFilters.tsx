@@ -312,6 +312,7 @@ export const CuratedContentFiltersComponent: React.FC<CuratedContentFiltersProps
                 { code: 'zh', name: 'Çince', flag: '🇨🇳' },
                 { code: 'ar', name: 'Arapça', flag: '🇸🇦' },
                 { code: 'hi', name: 'Hintçe', flag: '🇮🇳' },
+                { code: 'fa', name: 'Farsça', flag: '🇮🇷' },
                 { code: 'nl', name: 'Hollandaca', flag: '🇳🇱' },
                 { code: 'sv', name: 'İsveççe', flag: '🇸🇪' },
                 { code: 'no', name: 'Norveççe', flag: '🇳🇴' },

@@ -7,11 +7,13 @@ import Backend from 'i18next-http-backend';
 import en from './locales/en.json';
 import tr from './locales/tr.json';
 import es from './locales/es.json';
+// import fa from './locales/fa.json'; // Persian will be added
 
 const resources = {
   en: { translation: en },
   tr: { translation: tr },
   es: { translation: es }
+  // fa: { translation: fa } // Persian will be added when locale file is created
 };
 
 // Language detection options
@@ -100,7 +102,8 @@ export default i18n;
 export const supportedLanguages = [
   { code: 'en', name: 'English', nativeName: 'English' },
   { code: 'tr', name: 'Turkish', nativeName: 'Türkçe' },
-  { code: 'es', name: 'Spanish', nativeName: 'Español' }
+  { code: 'es', name: 'Spanish', nativeName: 'Español' },
+  { code: 'fa', name: 'Persian', nativeName: 'فارسی' }
 ];
 
 export const getCurrentLanguage = () => i18n.language;

@@ -209,6 +209,7 @@ export const ProfileForm: React.FC<ProfileFormProps> = ({
                 <option value="zh">Çince</option>
                 <option value="ar">Arapça</option>
                 <option value="hi">Hintçe</option>
+                <option value="fa">Farsça</option>
               </select>
             </div>
 
