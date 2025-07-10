@@ -253,10 +253,10 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
   return (
     <>
       <div 
-        className={`group relative bg-gradient-to-br from-slate-800 to-slate-900 rounded-2xl shadow-xl overflow-hidden hover:shadow-2xl transition-all duration-500 hover:scale-[1.02] border-2 ${
+        className={`group relative bg-brand-cardBg rounded-2xl shadow-xl overflow-hidden hover:shadow-2xl transition-all duration-500 hover:scale-105 border-2 ${
           userRating === 'not_interested' ? 'border-red-500/50 opacity-60' : 
           userRating === 'skip' ? 'border-orange-500/50 opacity-70' : 
-          'border-amber-500/30'
+          'border-brand-primary/30'
         }`}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
@@ -274,7 +274,7 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
         )}
 
         {/* Movie Poster */}
-        <div className={`relative overflow-hidden ${compactHeight ? 'aspect-[4/3]' : 'aspect-[3/4]'}`}>
+        <div className={`relative overflow-hidden ${compactHeight ? 'aspect-[16/9]' : 'aspect-[16/9]'}`}>
           <img
             src={tmdbService.getImageUrl(movie.poster_path, 'w500')}
             alt={title}
@@ -308,7 +308,7 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
                   <button
                     onClick={handleTrailerClick}
                     disabled={loadingTrailer}
-                    className="flex items-center space-x-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:from-amber-600/50 disabled:to-orange-600/50 text-white px-4 py-2 rounded-xl transition-all duration-200 text-sm font-medium shadow-lg"
+                    className="flex items-center space-x-2 bg-gradient-to-r from-brand-primary to-brand-secondary hover:from-brand-primary/80 hover:to-brand-secondary/80 disabled:from-brand-primary/50 disabled:to-brand-secondary/50 text-white px-4 py-2 rounded-xl transition-all duration-200 text-sm font-medium shadow-lg"
                   >
                     {loadingTrailer ? (
                       <>
@@ -384,8 +384,8 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
 
           {/* Rating Badge */}
           {!hideInfoBadges && (
-            <div className="absolute top-4 right-4 bg-black/80 backdrop-blur-sm rounded-xl px-3 py-2 border border-amber-500/30">
-              <div className="flex items-center space-x-1 text-amber-400">
+            <div className="absolute top-4 right-4 bg-black/80 backdrop-blur-sm rounded-xl px-3 py-2 border border-brand-secondary/30">
+              <div className="flex items-center space-x-1 text-brand-secondary">
                 <Star className="h-4 w-4 fill-current" />
                 <span className="text-sm font-bold">
                   {movie.vote_average.toFixed(1)}
@@ -397,17 +397,17 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
 
         {/* Movie Info - AI Öneri Kartı Tasarımı */}
         <div className="px-4 pt-4 pb-2">
-          <h3 className="font-bold text-white text-lg mb-1 line-clamp-2 leading-tight">
+          <h3 className="font-bold text-brand-textLight text-lg mb-1 line-clamp-2 leading-tight">
             {title}
           </h3>
           
           {/* Compact Info Row */}
-          <div className="flex items-center space-x-3 text-sm text-slate-400 mb-2">
+          <div className="flex items-center space-x-3 text-sm text-brand-textSubtle mb-2">
             <div className="flex items-center space-x-1">
               <span>{getReleaseDate() ? new Date(getReleaseDate()).getFullYear() : ''}</span>
             </div>
             <div className="w-1 h-1 bg-slate-500 rounded-full"></div>
-            <span className="text-slate-300 text-sm truncate">{getGenreNames()}</span>
+            <span className="text-brand-textLight text-sm truncate">{getGenreNames()}</span>
             {movie.original_language && (
               <>
                 <div className="w-1 h-1 bg-slate-500 rounded-full"></div>

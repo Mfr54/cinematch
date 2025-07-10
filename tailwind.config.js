@@ -8,6 +8,15 @@ export default {
   theme: {
     extend: {
       colors: {
+        // CineMatch Brand Colors from Revision Plan
+        brand: {
+          primary: '#FF4C29',
+          secondary: '#FFD369',
+          dark: '#121212',
+          cardBg: '#1F1F1F',
+          textLight: '#FFFFFF',
+          textSubtle: '#B0B0B0',
+        },
         slate: {
           750: '#334155',
         }

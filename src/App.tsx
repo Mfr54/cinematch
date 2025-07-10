@@ -274,7 +274,7 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex">
+    <div className="min-h-screen bg-brand-dark flex">
       {/* Sidebar */}
       <Sidebar
         activeTab={activeTab}
@@ -310,10 +310,10 @@ function App() {
                 <Menu className="h-6 w-6 text-slate-300" />
               </button>
               <div className="flex items-center space-x-3">
-                <div className="bg-gradient-to-r from-amber-500 to-orange-500 p-2 rounded-lg">
+                <div className="bg-gradient-to-r from-brand-primary to-brand-secondary p-2 rounded-lg">
                   <Sparkles className="h-5 w-5 text-white" />
                 </div>
-                <h1 className="text-lg font-bold bg-gradient-to-r from-amber-400 to-orange-500 bg-clip-text text-transparent">
+                <h1 className="text-lg font-bold bg-gradient-to-r from-brand-secondary to-brand-primary bg-clip-text text-transparent">
                   CineMatch
                 </h1>
               </div>
@@ -400,7 +400,7 @@ function App() {
               <button
                 onClick={() => searchMovies(searchQuery, (results) => setSearchResults(results))}
                 disabled={loading}
-                className="absolute right-2 top-1/2 transform -translate-y-1/2 p-2 rounded-lg bg-amber-500 hover:bg-amber-600 disabled:bg-amber-600/50 transition-colors"
+                className="absolute right-2 top-1/2 transform -translate-y-1/2 p-2 rounded-lg bg-brand-primary hover:bg-brand-primary/80 disabled:bg-brand-primary/50 transition-colors"
               >
                 <Search className="h-4 w-4 text-white" />
               </button>
