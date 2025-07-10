@@ -7,7 +7,7 @@ import type { Movie, TVShow, Genre } from '../../content/types';
 
 interface OnboardingFlowProps {
   genres: Genre[];
-  onComplete: () => void;
+  onComplete: (redirectToSettings?: boolean) => void;
   onRate: (itemId: number, rating: number | 'not_watched' | 'not_interested' | 'skip', mediaType: 'movie' | 'tv') => void;
   getUserRating: (itemId: number) => number | 'not_watched' | 'not_interested' | 'skip' | null;
   isInWatchlist: (itemId: number) => boolean;
@@ -119,8 +119,10 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({
       if (newRatingCount >= 10) {
         localStorage.setItem('onboardingCompleted', 'true');
         localStorage.removeItem('onboardingState');
+        // Mark that user needs to complete initial settings
+        localStorage.setItem('needsInitialSetup', 'true');
         setTimeout(() => {
-          onComplete();
+          onComplete(true); // true indicates redirect to settings
         }, 1000);
         shouldAdvance = false;
       }

@@ -72,6 +72,8 @@ export interface AppSettings {
 interface SettingsPageProps {
   settings: AppSettings;
   onSettingsChange: (settings: AppSettings) => void;
+  isInitialSetup?: boolean;
+  onInitialSetupComplete?: () => void;
 }
 
 const defaultSettings: AppSettings = {
@@ -117,11 +119,15 @@ const defaultSettings: AppSettings = {
 
 export const SettingsPage: React.FC<SettingsPageProps> = ({
   settings,
-  onSettingsChange
+  onSettingsChange,
+  isInitialSetup = false,
+  onInitialSetupComplete
 }) => {
   const [activeTab, setActiveTab] = useState<'appearance' | 'content' | 'algorithm' | 'performance' | 'privacy' | 'experimental'>('appearance');
   const [localSettings, setLocalSettings] = useState<AppSettings>(settings);
   const [hasChanges, setHasChanges] = useState(false);
+  const [setupStep, setSetupStep] = useState(1);
+  const [completedSteps, setCompletedSteps] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     setLocalSettings(settings);
@@ -160,6 +166,36 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     setHasChanges(true);
   };
 
+  const handleNextStep = () => {
+    if (setupStep === 1) {
+      setCompletedSteps((prev: Set<number>) => new Set([...prev, 1]));
+      setActiveTab('content');
+      setSetupStep(2);
+    } else if (setupStep === 2) {
+      setCompletedSteps((prev: Set<number>) => new Set([...prev, 2]));
+      setActiveTab('algorithm');
+      setSetupStep(3);
+    } else if (setupStep === 3) {
+      setCompletedSteps((prev: Set<number>) => new Set([...prev, 3]));
+      if (onInitialSetupComplete) {
+        onInitialSetupComplete();
+      }
+    }
+  };
+
+  const canProceedToNext = () => {
+    if (setupStep === 1) {
+      // At least theme selection is required
+      return true;
+    } else if (setupStep === 2) {
+      // At least recommendation count is set
+      return localSettings.recommendationCount > 0;
+    } else if (setupStep === 3) {
+      return true;
+    }
+    return false;
+  };
+
   const tabs = [
     { id: 'appearance', label: 'Görünüm', icon: Palette },
     { id: 'content', label: 'İçerik', icon: Eye },
@@ -179,26 +215,63 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
               <Settings className="h-6 w-6 text-white" />
             </div>
             <div>
-              <h2 className="text-2xl font-bold text-white tracking-tight">Ayarlar</h2>
-              <p className="text-slate-300 text-sm mt-1">Uygulamayı ihtiyaçlarınıza göre özelleştirin</p>
+              <h2 className="text-2xl font-bold text-white tracking-tight">
+                {isInitialSetup ? 'İlk Kurulum' : 'Ayarlar'}
+              </h2>
+              <p className="text-slate-300 text-sm mt-1">
+                {isInitialSetup ? 'CineMatch\'i kişiselleştirmek için temel ayarları yapalım' : 'Uygulamayı ihtiyaçlarınıza göre özelleştirin'}
+              </p>
             </div>
           </div>
           <div className="flex gap-2 w-full sm:w-auto">
-            <button
-              onClick={handleReset}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/80 text-slate-200 hover:bg-slate-600/80 border border-slate-600/50 transition-all text-sm font-medium"
-            >
-              <RotateCcw className="h-4 w-4" /> Varsayılanlar
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={!hasChanges}
-              className={`flex items-center gap-2 px-5 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold shadow-lg disabled:opacity-60 disabled:cursor-not-allowed transition-all text-sm ${!hasChanges ? 'opacity-50 cursor-not-allowed' : ''}`}
-            >
-              <Save className="h-4 w-4" /> Kaydet
-            </button>
+            {!isInitialSetup && (
+              <button
+                onClick={handleReset}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-700/80 text-slate-200 hover:bg-slate-600/80 border border-slate-600/50 transition-all text-sm font-medium"
+              >
+                <RotateCcw className="h-4 w-4" /> Varsayılanlar
+              </button>
+            )}
+            {isInitialSetup ? (
+              <button
+                onClick={handleNextStep}
+                disabled={!canProceedToNext()}
+                className={`flex items-center gap-2 px-5 py-2 rounded-lg bg-gradient-to-r from-green-500 to-emerald-500 text-white font-bold shadow-lg transition-all text-sm ${!canProceedToNext() ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {setupStep === 3 ? 'Kurulumu Tamamla' : 'Sonraki Adım'}
+              </button>
+            ) : (
+              <button
+                onClick={handleSave}
+                disabled={!hasChanges}
+                className={`flex items-center gap-2 px-5 py-2 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 text-white font-bold shadow-lg disabled:opacity-60 disabled:cursor-not-allowed transition-all text-sm ${!hasChanges ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                <Save className="h-4 w-4" /> Kaydet
+              </button>
+            )}
           </div>
         </div>
+
+        {/* Initial Setup Progress */}
+        {isInitialSetup && (
+          <div className="mb-6 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 border border-indigo-500/30 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-white font-medium">Kurulum İlerlemesi</span>
+              <span className="text-indigo-300 text-sm">Adım {setupStep}/3</span>
+            </div>
+            <div className="w-full bg-slate-600 rounded-full h-2 mb-3">
+              <div 
+                className="bg-gradient-to-r from-indigo-500 to-purple-500 h-2 rounded-full transition-all duration-500"
+                style={{ width: `${(setupStep / 3) * 100}%` }}
+              ></div>
+            </div>
+            <div className="text-sm text-slate-300">
+              {setupStep === 1 && "İlk olarak görünüm tercihlerinizi ayarlayalım"}
+              {setupStep === 2 && "Şimdi içerik tercihlerinizi belirleyelim"}
+              {setupStep === 3 && "Son olarak AI algoritması ayarlarını yapalım"}
+            </div>
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="flex space-x-1 mb-6 bg-slate-700 rounded-lg p-1">

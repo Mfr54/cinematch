@@ -176,12 +176,18 @@ function App() {
     }
   }, [clearData]);
 
-  const handleOnboardingComplete = useCallback(() => {
+  const handleOnboardingComplete = useCallback((redirectToSettings?: boolean) => {
     // Onboarding tamamlandığını localStorage'a kaydet
     localStorage.setItem('onboardingCompleted', 'true');
     setShowOnboarding(false);
-    // Onboarding tamamlandıktan sonra AI önerileri ekranına git
-    setActiveTab('recommendations');
+    
+    if (redirectToSettings) {
+      // İlk kurulum için ayarlar sayfasına yönlendir
+      setActiveTab('settings');
+    } else {
+      // Normal durumda AI önerileri ekranına git
+      setActiveTab('recommendations');
+    }
   }, []);
 
   // Başka bir sekmede veya BFI gibi farklı bir bileşende puan verildiğinde ratings'i anında güncelle
@@ -419,6 +425,11 @@ function App() {
           <SettingsPage
             settings={settings}
             onSettingsChange={updateSettings}
+            isInitialSetup={localStorage.getItem('needsInitialSetup') === 'true'}
+            onInitialSetupComplete={() => {
+              localStorage.removeItem('needsInitialSetup');
+              setActiveTab('recommendations');
+            }}
           />
         ) : (
           <main className="flex-1 p-0">
