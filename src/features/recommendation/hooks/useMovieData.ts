@@ -1,1339 +1,556 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { useState, useEffect, useRef, useCallback } from 'react';
-import type { Movie, TVShow, Genre, UserRating, UserProfile, Recommendation } from '../../content/types';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
+import type {
+  Genre,
+  Movie,
+  TVShow,
+  UserProfile,
+  UserRating
+} from '../../content/types';
 import { tmdbService } from '../../content/services/tmdb';
-
 import { StorageService } from '../../../shared/services/storage';
 import { ProfileService } from '../../profile/services/profileService';
+import { RealTimeLearningService } from '../../learning/services/realTimeLearningService';
 import { RecommendationService } from '../services/recommendationService';
 import { CuratedMovieService } from '../services/curatedMovieService';
-import { LearningService } from '../../learning/services/learningService';
-import { RealTimeLearningService } from '../../learning/services/realTimeLearningService';
-import type { CuratedContentFilters } from '../components/CuratedContentFilters';
+import { useWatchlist } from './useWatchlist';
+import { useSearchState } from './useSearchState';
+import { useRecommendationFilters } from './useRecommendationFilters';
+import type { RecommendationFiltersState } from './useRecommendationFilters';
+import { useCuratedContentFilters } from './useCuratedContentFilters';
+import { useRecommendationEngine } from './useRecommendationEngine';
+import { useDiscoveryContent } from './useDiscoveryContent';
+import { useContentSearchController, type SearchResultSummary } from './useContentSearchController';
 import type { AppSettings } from '../../profile/components/SettingsModal';
+import type { CuratedContentFilters } from '../components/CuratedContentFilters';
+
+interface LoadingState {
+  current: number;
+  total: number;
+  message: string;
+}
+
+type RatingValue = number | 'not_watched' | 'not_interested' | 'skip';
+
+type SafeSetter = <T>(setter: Dispatch<SetStateAction<T>>, value: T, fallback: T) => void;
+
+const EMPTY_PROGRESS: LoadingState = { current: 0, total: 0, message: '' };
+
+const mergeRecommendationFilterSettings = (
+  filters: ReturnType<typeof useRecommendationFilters>['recommendationFilters'],
+  settings?: AppSettings
+) => ({
+  ...filters,
+  showKidsContent: settings?.showKidsContent ?? filters.showKidsContent,
+  showAnimationContent: settings?.showAnimationContent ?? filters.showAnimationContent,
+  showAnimeContent: settings?.showAnimeContent ?? filters.showAnimeContent
+});
+
+const combineGenres = (movieGenres: Genre[], tvGenres: Genre[]) => [...movieGenres, ...tvGenres];
+
+const arraysEqual = <T>(a: T[], b: T[]) => {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  return a.every((value, index) => value === b[index]);
+};
+
+const hasMeaningfulRecommendationFilterChange = (
+  prev: RecommendationFiltersState,
+  next: RecommendationFiltersState
+) => {
+  if (prev === next) {
+    return false;
+  }
+
+  return (
+    prev.minYear !== next.minYear ||
+    prev.maxYear !== next.maxYear ||
+    prev.minRating !== next.minRating ||
+    prev.maxRating !== next.maxRating ||
+    prev.mediaType !== next.mediaType ||
+    prev.minMatchScore !== next.minMatchScore ||
+    prev.showKidsContent !== next.showKidsContent ||
+    prev.showAnimationContent !== next.showAnimationContent ||
+    prev.showAnimeContent !== next.showAnimeContent ||
+    !arraysEqual(prev.genres, next.genres) ||
+    !arraysEqual(prev.languages, next.languages)
+  );
+};
+
+const hasMeaningfulCuratedFilterChange = (
+  prev: ReturnType<typeof useCuratedContentFilters>['curatedContentFilters'],
+  next: ReturnType<typeof useCuratedContentFilters>['curatedContentFilters']
+) => {
+  if (prev === next) {
+    return false;
+  }
+
+  return (
+    prev.mediaType !== next.mediaType ||
+    prev.minRating !== next.minRating ||
+    prev.maxRating !== next.maxRating ||
+    prev.minYear !== next.minYear ||
+    prev.maxYear !== next.maxYear ||
+    prev.minVoteCount !== next.minVoteCount ||
+    !arraysEqual(prev.genres, next.genres) ||
+    !arraysEqual(prev.languages ?? [], next.languages ?? [])
+  );
+};
 
 export const useMovieData = (settings?: AppSettings) => {
-  const [watchlist, setWatchlist] = useState<any[]>(StorageService.getWatchlist());
-  const [ratings, setRatings] = useState<any[]>(StorageService.getRatings());
-  const [profile, setProfile] = useState<any>(StorageService.getProfile());
-  const [movies, setMoviesLocal] = useState<(Movie | TVShow)[]>([]);
-  const [allMovies, setAllMoviesLocal] = useState<(Movie | TVShow)[]>([]);
-  const [genres, setGenresLocal] = useState<Genre[]>([]);
-  const [tvGenres, setTVGenresLocal] = useState<Genre[]>([]);
-  const [recommendations, setRecommendationsLocal] = useState<Recommendation[]>([]);
-  const [filteredRecommendations, setFilteredRecommendationsLocal] = useState<Recommendation[]>([]);
+  const [ratings, setRatings] = useState<UserRating[]>(() => StorageService.getRatings() ?? []);
+  const [profile, setProfile] = useState<UserProfile | null>(() => StorageService.getProfile());
+  const [movieGenres, setMovieGenres] = useState<Genre[]>([]);
+  const [tvGenres, setTvGenres] = useState<Genre[]>([]);
   const [loading, setLoading] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState({ current: 0, total: 0, message: '' });
-  const [searchQuery, setSearchQueryLocal] = useState(() => {
-    return localStorage.getItem('searchQuery') || '';
-  });
-  const [showingCuratedMovies, setShowingCuratedMovies] = useState(() => {
-    const stored = localStorage.getItem('showingCuratedMovies');
-    return stored ? JSON.parse(stored) : true;
-  });
+  const [loadingProgress, setLoadingProgress] = useState<LoadingState>(EMPTY_PROGRESS);
   const [error, setError] = useState<string | null>(null);
 
-  // Separate loading states for independent operation
-  const [recommendationsLoading, setRecommendationsLoading] = useState(false);
-  const [curatedContentLoading, setCuratedContentLoading] = useState(false);
-  const [recommendationsLoadingProgress, setRecommendationsLoadingProgress] = useState({ current: 0, total: 0, message: '' });
-  const [curatedContentLoadingProgress, setCuratedContentLoadingProgress] = useState({ current: 0, total: 0, message: '' });
+  const initialLoadRef = useRef(false);
+  const ratingsRef = useRef<UserRating[]>(ratings);
+  const profileRef = useRef<UserProfile | null>(profile);
+  const searchCallbackRef = useRef<((summary: SearchResultSummary) => void) | undefined>(undefined);
+  useEffect(() => {
+    ratingsRef.current = ratings;
+  }, [ratings]);
 
-  // Recommendation filters - GELİŞTİRİLDİ
-  const [recommendationFilters, setRecommendationFiltersLocal] = useState(() => {
-    const stored = localStorage.getItem('recommendationFilters');
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        return {
-          genres: parsed.genres || [],
-          minYear: parsed.minYear || settings?.defaultFilters.minYear || 1950,
-          maxYear: parsed.maxYear || settings?.defaultFilters.maxYear || new Date().getFullYear(),
-          minRating: parsed.minRating || settings?.defaultFilters.minRating || 0,
-          maxRating: parsed.maxRating || settings?.defaultFilters.maxRating || 10,
-          mediaType: parsed.mediaType || 'all',
-          sortBy: parsed.sortBy || 'match_score',
-          minMatchScore: parsed.minMatchScore || settings?.defaultFilters.minMatchScore || 0,
-          languages: parsed.languages || [],
-          showKidsContent: typeof parsed.showKidsContent === 'boolean' ? parsed.showKidsContent : (settings?.showKidsContent !== undefined ? settings.showKidsContent : false),
-          showAnimationContent: typeof parsed.showAnimationContent === 'boolean' ? parsed.showAnimationContent : (settings?.showAnimationContent !== undefined ? settings.showAnimationContent : true),
-          showAnimeContent: typeof parsed.showAnimeContent === 'boolean' ? parsed.showAnimeContent : (settings?.showAnimeContent !== undefined ? settings.showAnimeContent : true)
-        };
-      } catch (error) {
-        console.warn('Failed to parse stored recommendation filters:', error);
-      }
-    }
-    return {
-      genres: [] as number[],
-      minYear: settings?.defaultFilters.minYear || 1950,
-      maxYear: settings?.defaultFilters.maxYear || new Date().getFullYear(),
-      minRating: settings?.defaultFilters.minRating || 0,
-      maxRating: settings?.defaultFilters.maxRating || 10,
-      mediaType: 'all' as 'all' | 'movie' | 'tv',
-      sortBy: 'match_score' as 'match_score' | 'rating' | 'year' | 'title',
-      minMatchScore: settings?.defaultFilters.minMatchScore || 0,
-      languages: [] as string[],
-      showKidsContent: settings?.showKidsContent || false,
-      showAnimationContent: settings?.showAnimationContent || true,
-      showAnimeContent: settings?.showAnimeContent || true
-    };
-  });
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
 
-  // Curated content filters
-  const [curatedContentFilters, setCuratedContentFiltersLocal] = useState<CuratedContentFilters>(() => {
-    const stored = localStorage.getItem('curatedContentFilters');
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        return {
-          mediaType: parsed.mediaType || 'all',
-          minRating: parsed.minRating || settings?.defaultFilters.minRating || 0,
-          maxRating: parsed.maxRating || settings?.defaultFilters.maxRating || 10,
-          minYear: parsed.minYear || settings?.defaultFilters.minYear || 1900,
-          maxYear: parsed.maxYear || settings?.defaultFilters.maxYear || new Date().getFullYear(),
-          genres: parsed.genres || [],
-          sortBy: parsed.sortBy || 'rating',
-          sortOrder: parsed.sortOrder || 'desc',
-          minVoteCount: parsed.minVoteCount || 0,
-          languages: parsed.languages || []
-        };
-      } catch (error) {
-        console.warn('Failed to parse stored curated content filters:', error);
-      }
-    }
-    return {
-      mediaType: 'all',
-      minRating: settings?.defaultFilters.minRating || 0,
-      maxRating: settings?.defaultFilters.maxRating || 10,
-      minYear: settings?.defaultFilters.minYear || 1900,
-      maxYear: settings?.defaultFilters.maxYear || new Date().getFullYear(),
-      genres: [],
-      sortBy: 'rating',
-      sortOrder: 'desc',
-      minVoteCount: 0,
-      languages: []
-    };
-  });
-
-  const [showCuratedFilters, setShowCuratedFiltersLocal] = useState(false);
-
-  // Refs to prevent unnecessary re-renders and infinite loops
-  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastSearchQueryRef = useRef<string>('');
-  const isInitialLoadRef = useRef(true);
-  const loadingRef = useRef(false);
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  // Error handling helper
-  const handleError = useCallback((error: any, context: string) => {
-    console.error(`Error in ${context}:`, error);
-    setError(`${context} sırasında hata oluştu: ${error.message || 'Bilinmeyen hata'}`);
-    setLoading(false);
-    loadingRef.current = false;
+  const handleError = useCallback((err: unknown, context: string) => {
+    console.error(`Error in ${context}:`, err);
+    const message = err instanceof Error ? err.message : String(err);
+    setError(`${context} sırasında hata oluştu: ${message}`);
   }, []);
 
-  // Safe state updates with error boundaries
-  const safeSetState = useCallback(<T>(setter: React.Dispatch<React.SetStateAction<T>>, value: T, fallback: T) => {
+  const safeSetState = useCallback<SafeSetter>((setter, value, fallback) => {
     try {
       setter(value);
-    } catch (error) {
-      console.error('State update error:', error);
+    } catch (err) {
+      console.error('State update error:', err);
       setter(fallback);
     }
   }, []);
 
-  // Save recommendation filters to localStorage whenever they change
-  useEffect(() => {
-    try {
-      localStorage.setItem('recommendationFilters', JSON.stringify(recommendationFilters));
-    } catch (error) {
-      console.warn('Failed to save recommendation filters to localStorage:', error);
-    }
-  }, [recommendationFilters]);
+  const {
+    watchlist,
+    addToWatchlist,
+    removeFromWatchlist,
+    isInWatchlist,
+    syncWatchlist,
+    clearWatchlist
+  } = useWatchlist(handleError);
 
-  // Save curated content filters to localStorage whenever they change
-  useEffect(() => {
-    try {
-      localStorage.setItem('curatedContentFilters', JSON.stringify(curatedContentFilters));
-    } catch (error) {
-      console.warn('Failed to save curated content filters to localStorage:', error);
-    }
-  }, [curatedContentFilters]);
+  const {
+    searchQuery,
+    setSearchQuery,
+    showingCuratedMovies,
+    setShowingCuratedMovies
+  } = useSearchState();
 
-  // Save search query to localStorage whenever it changes
-  useEffect(() => {
-    try {
-      localStorage.setItem('searchQuery', searchQuery);
-    } catch (error) {
-      console.warn('Failed to save search query to localStorage:', error);
-    }
-  }, [searchQuery]);
+  const {
+    recommendationFilters,
+    setRecommendationFilters: setRecommendationFiltersState,
+    resetRecommendationFilters
+  } = useRecommendationFilters(settings);
 
-  // Save showingCuratedMovies to localStorage whenever it changes
-  useEffect(() => {
-    try {
-      localStorage.setItem('showingCuratedMovies', JSON.stringify(showingCuratedMovies));
-    } catch (error) {
-      console.warn('Failed to save showingCuratedMovies to localStorage:', error);
-    }
-  }, [showingCuratedMovies]);
+  const {
+    curatedContentFilters,
+    setCuratedContentFilters,
+    resetCuratedContentFilters,
+    showCuratedFilters,
+    setShowCuratedFilters
+  } = useCuratedContentFilters(settings);
 
-  // Update filters when settings change
-  useEffect(() => {
-    if (settings?.defaultFilters) {
-      try {
-        setRecommendationFiltersLocal(prev => ({
-          ...prev,
-          minYear: settings.defaultFilters.minYear,
-          maxYear: settings.defaultFilters.maxYear,
-          minRating: settings.defaultFilters.minRating,
-          maxRating: settings.defaultFilters.maxRating,
-          minMatchScore: settings.defaultFilters.minMatchScore
-        }));
+  const curatedFiltersRef = useRef(curatedContentFilters);
+  const curatedFilterBootstrappedRef = useRef(false);
 
-        setCuratedContentFiltersLocal(prev => ({
-          ...prev,
-          minRating: settings.defaultFilters.minRating,
-          maxRating: settings.defaultFilters.maxRating,
-          minYear: settings.defaultFilters.minYear,
-          maxYear: settings.defaultFilters.maxYear
-        }));
-      } catch (error) {
-        handleError(error, 'Ayarlar güncellenirken');
+
+  const discoveryContentParams: Parameters<typeof useDiscoveryContent>[0] = settings
+    ? { filters: curatedContentFilters, settings, onError: handleError }
+    : { filters: curatedContentFilters, onError: handleError };
+
+  const {
+    movies,
+    allMovies,
+    loading: curatedContentLoading,
+    progress: curatedContentLoadingProgress,
+    replaceContent,
+    removeContentById,
+    refreshCuratedContent: refreshDiscoveryContent,
+    setContentDirectly
+  } = useDiscoveryContent(discoveryContentParams);
+
+  const watchlistIds = useMemo(() => watchlist.map(item => item.id), [watchlist]);
+
+  const recommendationEngineParams: Parameters<typeof useRecommendationEngine>[0] = settings
+    ? {
+        profile,
+        genres: movieGenres,
+        tvGenres,
+        ratings,
+        filters: mergeRecommendationFilterSettings(recommendationFilters, settings),
+        settings,
+        watchlistIds,
+        onError: handleError
       }
-    }
-  }, [settings, handleError]);
+    : {
+        profile,
+        genres: movieGenres,
+        tvGenres,
+        ratings,
+        filters: mergeRecommendationFilterSettings(recommendationFilters, settings),
+        watchlistIds,
+        onError: handleError
+      };
 
-  // Refresh recommendations when recommendation count changes
+  const {
+    recommendations,
+    filteredRecommendations,
+    loading: recommendationsLoading,
+    progress: recommendationsLoadingProgress,
+    refreshRecommendations: refreshRecommendationEngine,
+    replaceRecommendations,
+    clearRecommendations
+  } = useRecommendationEngine(recommendationEngineParams);
+
   useEffect(() => {
-    if (profile && !isInitialLoadRef.current && settings?.recommendationCount) {
-      // Debounce the refresh to avoid too many API calls
-      const timeoutId = setTimeout(() => {
-        refreshRecommendations();
-      }, 500);
-      
-      return () => clearTimeout(timeoutId);
-    }
-    return undefined;
-  }, [settings?.recommendationCount, profile]);
-
-  // Refresh curated content when discovery content count changes
-  useEffect(() => {
-    if (!isInitialLoadRef.current && settings?.discoveryContentCount) {
-      // Debounce the refresh to avoid too many API calls
-      const timeoutId = setTimeout(() => {
-        refreshCuratedContent();
-      }, 500);
-      
-      return () => clearTimeout(timeoutId);
-    }
-    return undefined;
-  }, [settings?.discoveryContentCount]);
-
-  // Enhanced search function with abort controller
-  const searchMovies = useCallback(async (query: string, onSearchComplete?: (results: { totalResults: number; searchType: 'content' | 'person' | 'mixed' }) => void) => {
-    if (loadingRef.current) return;
-    
-    // Create new abort controller
-    abortControllerRef.current = new AbortController();
-    
-    if (!query || typeof query !== 'string' || !query.trim()) {
-      setLoading(true);
-      loadingRef.current = true;
-      try {
-        // Arama yoksa boş liste göster
-        setAllMoviesLocal([]);
-        setMoviesLocal([]);
-        setShowingCuratedMovies(false);
-        onSearchComplete?.({ totalResults: 0, searchType: 'content' });
-      } catch (error) {
-        if (error instanceof Error) {
-          handleError(error, 'Arama temizleme');
-        } else {
-          handleError(new Error(String(error)), 'Arama temizleme');
-        }
-      } finally {
-        setLoading(false);
-        loadingRef.current = false;
-      }
+    if (!curatedFilterBootstrappedRef.current) {
+      curatedFilterBootstrappedRef.current = true;
+      curatedFiltersRef.current = curatedContentFilters;
       return;
     }
 
-    setLoading(true);
-    loadingRef.current = true;
+    const previousFilters = curatedFiltersRef.current;
+    curatedFiltersRef.current = curatedContentFilters;
+
+    if (hasMeaningfulCuratedFilterChange(previousFilters, curatedContentFilters)) {
+      refreshDiscoveryContent(ratingsRef.current);
+    }
+  }, [curatedContentFilters, refreshDiscoveryContent]);
+
+  const handleSearchResults = useCallback((items: (Movie | TVShow)[], summary: SearchResultSummary) => {
+    setContentDirectly(items);
     setShowingCuratedMovies(false);
-    setError(null);
-    
-    try {
-      const searchResults = await tmdbService.enhancedSearch(query);
-      
-      if (abortControllerRef.current?.signal.aborted) {
-        return; // Request was aborted
-      }
-
-      const allResults = [...(searchResults.movies || []), ...(searchResults.tvShows || [])];
-      
-      // Filter out rated content and watchlist items
-      const excludedContentIds = new Set([
-        ...(ratings || [])
-          .filter(r => r.rating === 'not_interested' || r.rating === 'skip' || (typeof r.rating === 'number'))
-          .map(r => r.movieId),
-        ...(watchlist || []).map(item => item.id)
-      ]);
-      
-      let unratedResults = allResults.filter(item => item && !excludedContentIds.has(item.id));
-
-      // Apply settings filters to search results
-      if (settings?.minContentRating && typeof settings.minContentRating === 'number') {
-        unratedResults = unratedResults.filter(item => 
-          item && typeof item.vote_average === 'number' &&
-          item.vote_average >= settings.minContentRating
-        );
-      }
-
-      // Apply TMDB score filter
-      if (settings?.minTmdbScore && typeof settings.minTmdbScore === 'number') {
-        unratedResults = unratedResults.filter(item => 
-          item && typeof item.vote_average === 'number' &&
-          item.vote_average >= settings.minTmdbScore
-        );
-      }
-
-      // Apply TMDB vote count filter
-      if (settings?.minTmdbVoteCount && typeof settings.minTmdbVoteCount === 'number') {
-        unratedResults = unratedResults.filter(item => 
-          item && typeof item.vote_count === 'number' &&
-          item.vote_count >= settings.minTmdbVoteCount
-        );
-      }
-
-      if (settings && !settings.showAdultContent) {
-        unratedResults = unratedResults.filter(item => !('adult' in item && !!item.adult));
-      }
-      
-      setAllMoviesLocal(unratedResults);
-      setMoviesLocal(unratedResults);
-      
-      // Call callback with search result info
-      onSearchComplete?.({
-        totalResults: searchResults.totalResults,
-        searchType: searchResults.searchType
-      });
-    
-    } catch (error: unknown) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        return; // Request was aborted, don't handle as error
-      }
-      
-      if (error instanceof Error) {
-        handleError(error, 'Arama');
-      } else {
-        handleError(new Error(String(error)), 'Arama');
-      }
-      
-      // Fallback search
-      try {
-        const results = await tmdbService.searchMulti(query);
-        const excludedContentIds = new Set([
-          ...(ratings || [])
-            .filter(r => r.rating === 'not_interested' || r.rating === 'skip' || (typeof r.rating === 'number'))
-            .map(r => r.movieId),
-          ...(watchlist || []).map(item => item.id)
-        ]);
-        let unratedResults = (results.results || []).filter(item => item && !excludedContentIds.has(item.id));
-
-        // Apply settings filters
-        if (settings?.minContentRating) {
-          unratedResults = unratedResults.filter(item => 
-            item && typeof item.vote_average === 'number' &&
-            item.vote_average >= settings.minContentRating
-          );
-        }
-
-        // Apply TMDB score filter
-        if (settings?.minTmdbScore && typeof settings.minTmdbScore === 'number') {
-          unratedResults = unratedResults.filter(item => 
-            item && typeof item.vote_average === 'number' &&
-            item.vote_average >= settings.minTmdbScore
-          );
-        }
-
-        // Apply TMDB vote count filter
-        if (settings?.minTmdbVoteCount && typeof settings.minTmdbVoteCount === 'number') {
-          unratedResults = unratedResults.filter(item => 
-            item && typeof item.vote_count === 'number' &&
-            item.vote_count >= settings.minTmdbVoteCount
-          );
-        }
-
-        if (settings && !settings.showAdultContent) {
-          unratedResults = unratedResults.filter(item => !('adult' in item && !!item.adult));
-        }
-
-        setAllMoviesLocal(unratedResults);
-        setMoviesLocal(unratedResults);
-        
-        // Call callback with fallback search result info
-        onSearchComplete?.({
-          totalResults: results.total_results || 0,
-          searchType: 'content'
-        });
-      } catch (fallbackError) {
-        if (fallbackError instanceof Error) {
-          handleError(fallbackError, 'Yedek arama');
-        } else {
-          handleError(new Error(String(fallbackError)), 'Yedek arama');
-        }
-        setAllMoviesLocal([]);
-        setMoviesLocal([]);
-        onSearchComplete?.({ totalResults: 0, searchType: 'content' });
-      }
-    } finally {
-      setLoading(false);
-      loadingRef.current = false;
+    if (searchCallbackRef.current) {
+      searchCallbackRef.current(summary);
+      searchCallbackRef.current = undefined;
     }
-  }, [profile, ratings, genres, tvGenres, settings, watchlist, handleError, safeSetState]);
+  }, [setContentDirectly, setShowingCuratedMovies]);
 
-  // Memoized functions to prevent recreation on every render
-  const stableSetSearchQuery = useCallback((query: string) => {
-    if (typeof query === 'string') {
-      setSearchQueryLocal(query);
-    }
-  }, []);
-
-  const stableSetRecommendationFilters = useCallback((filters: typeof recommendationFilters) => {
-    if (filters && typeof filters === 'object') {
-      setRecommendationFiltersLocal(filters);
-    }
-  }, []);
-
-  const stableSetCuratedContentFilters = useCallback((filters: CuratedContentFilters) => {
-    if (filters && typeof filters === 'object') {
-      setCuratedContentFiltersLocal(filters);
-    }
-  }, []);
-
-  const stableSetShowCuratedFilters = useCallback((show: boolean) => {
-    setShowCuratedFiltersLocal(Boolean(show));
-  }, []);
-
-  // Load initial data only once with proper error handling
-  useEffect(() => {
-    if (!isInitialLoadRef.current) return;
-    
-    const loadInitialData = async () => {
-      if (loadingRef.current) return;
-      loadingRef.current = true;
-      
-      try {
+  const searchControllerParams = useMemo(() => (
+    {
+      ratings,
+      watchlistIds,
+      onError: handleError,
+      onResults: handleSearchResults,
+      onActive: () => {
         setLoading(true);
         setError(null);
-        setLoadingProgress({ current: 0, total: 4, message: 'Film türleri yükleniyor...' });
-        
-        const [genresData, tvGenresData] = await Promise.all([
-          tmdbService.fetchGenres().catch(err => {
-            console.warn('Movie genres fetch failed:', err);
-            return [];
-          }),
-          tmdbService.fetchTVGenres().catch(err => {
-            console.warn('TV genres fetch failed:', err);
-            return [];
-          })
-        ]);
-        
-        safeSetState(setGenresLocal, genresData, []);
-        safeSetState(setTVGenresLocal, tvGenresData, []);
-        setLoadingProgress({ current: 2, total: 4, message: 'Veriler yükleniyor...' });
-        
-        // Load stored data with validation
-        const storedRatings = StorageService.getRatings();
-        const storedWatchlist = StorageService.getWatchlist();
-        
-        // Validate stored data
-        const validRatings = Array.isArray(storedRatings) ? storedRatings.filter(r => 
-          r && typeof r === 'object' && 
-          typeof r.movieId === 'number' && 
-          r.movieId > 0 &&
-          (typeof r.rating === 'number' || ['not_watched', 'not_interested', 'skip'].includes(r.rating as string))
-        ) : [];
-        
-        const validWatchlist = Array.isArray(storedWatchlist) ? storedWatchlist.filter(w => 
-          w && typeof w === 'object' && 
-          typeof w.id === 'number' && 
-          w.content
-        ) : [];
-
-        // Cache existing user content (rated and watchlisted)
-        const contentToCache: Array<{ id: number; mediaType: 'movie' | 'tv' }> = [];
-        
-        // Add rated content to cache list
-        validRatings.forEach(rating => {
-          if (rating.rating !== 'skip') {
-            contentToCache.push({
-              id: rating.movieId,
-              mediaType: rating.mediaType || 'movie'
-            });
-          }
-        });
-        
-        // Add watchlisted content to cache list
-        validWatchlist.forEach(item => {
-          if (item.content && !contentToCache.some(c => c.id === item.id)) {
-            const mediaType = 'media_type' in item.content && item.content.media_type === 'tv' ? 'tv' : 'movie';
-            contentToCache.push({
-              id: item.id,
-              mediaType
-            });
-          }
-        });
-        
-        // Cache all user content in background
-        if (contentToCache.length > 0) {
-          tmdbService.cacheMultipleUserContent(contentToCache);
-        }
-        
-        // safeSetState(setWatchlist, validWatchlist, []); // Local storage kullanıldığı için gerek yok
-        setLoadingProgress({ current: 3, total: 4, message: 'İçerikler hazırlanıyor...' });
-        
-        // Determine what movies to show based on learning phase
-        await loadMoviesBasedOnPhase(profile, validRatings, genresData, tvGenresData);
-        
-        setLoadingProgress({ current: 4, total: 4, message: 'Öneriler hazırlanıyor...' });
-        
-        // Generate recommendations if profile exists and user has rated at least 10 items
-        const validRatingCount = validRatings.filter(r => 
-          typeof r.rating === 'number' && r.rating >= 1 && r.rating <= 10
-        ).length;
-        
-        if (profile && validRatingCount >= 10) {
-          try {
-            setLoadingProgress({ current: 4, total: 5, message: 'AI önerileri hazırlanıyor...' });
-            const watchlistIds = validWatchlist.map(w => w.id);
-            const recs = await RecommendationService.generateRecommendations(
-              profile, 
-              genresData, 
-              tvGenresData,
-              validRatings,
-              { ...recommendationFilters, showKidsContent: settings?.showKidsContent ?? false, showAnimationContent: settings?.showAnimationContent ?? true, showAnimeContent: settings?.showAnimeContent ?? true },
-              settings?.recommendationCount !== undefined ? { recommendationCount: settings.recommendationCount } : {},
-              watchlistIds
-            );
-            safeSetState(setRecommendationsLocal, recs, []);
-            safeSetState(setFilteredRecommendationsLocal, recs, []);
-            setLoadingProgress({ current: 5, total: 5, message: 'Öneriler hazırlandı!' });
-          } catch (error) {
-            console.warn('Recommendation generation failed:', error);
-          }
-        } else if (validRatingCount < 10) {
-          // Clear any existing recommendations if user hasn't rated enough items
-          safeSetState(setRecommendationsLocal, [] as any[], []);
-          safeSetState(setFilteredRecommendationsLocal, [] as any[], []);
-        }
-      } catch (error) {
-        if (error instanceof Error) {
-          handleError(error, 'İlk veri yükleme');
-        } else {
-          handleError(new Error(String(error)), 'İlk veri yükleme');
-        }
-      } finally {
+      },
+      onIdle: () => {
         setLoading(false);
-        setLoadingProgress({ current: 0, total: 0, message: '' });
-        loadingRef.current = false;
-        isInitialLoadRef.current = false;
-      }
-    };
+      },
+      ...(settings ? { settings } : {})
+    }
+  ), [ratings, watchlistIds, handleError, handleSearchResults, settings]);
 
-    loadInitialData();
-  }, [handleError, safeSetState]);
+  const { search, cancelSearch, isSearching } = useContentSearchController(searchControllerParams);
 
-  // Handle search with debouncing and abort controller
+  const combinedGenres = useMemo(() => combineGenres(movieGenres, tvGenres), [movieGenres, tvGenres]);
+
   useEffect(() => {
-    // Abort previous request if exists
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-
-    // Clear existing timeout
-    if (searchTimeoutRef.current) {
-      clearTimeout(searchTimeoutRef.current);
-    }
-
-    // Only proceed if search query actually changed
-    if (lastSearchQueryRef.current === searchQuery) {
-      return;
-    }
-
-    lastSearchQueryRef.current = searchQuery;
-
-    // Set new timeout
-    searchTimeoutRef.current = setTimeout(() => {
-      if (!loadingRef.current) {
-        searchMovies(searchQuery);
-      }
-    }, 500);
-
-    return () => {
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
-      }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, [searchQuery]);
-
-  // Filter recommendations when filters change with error handling
-  useEffect(() => {
-    if (!Array.isArray(recommendations) || recommendations.length === 0) return;
-    
-    try {
-      const filterRecommendations = () => {
-        // Artık filtreler yeni öneriler oluştururken kullanılacak, mevcut önerileri filtrelemeyecek
-        // Sadece sıralama uygulanacak
-        const filtered = [...recommendations];
-
-        // Sort with error handling
-        filtered.sort((a, b) => {
-          try {
-            switch (recommendationFilters.sortBy) {
-              case 'match_score':
-                return (b.matchScore || 0) - (a.matchScore || 0);
-              case 'rating':
-                return (b.movie?.vote_average || 0) - (a.movie?.vote_average || 0);
-              case 'year':
-                const yearA = 'release_date' in (a.movie || {}) ? 
-                  new Date((a.movie as any).release_date || '').getFullYear() : 
-                  new Date((a.movie as any).first_air_date || '').getFullYear();
-                const yearB = 'release_date' in (b.movie || {}) ? 
-                  new Date((b.movie as any).release_date || '').getFullYear() : 
-                  new Date((b.movie as any).first_air_date || '').getFullYear();
-                return (yearB || 0) - (yearA || 0);
-              case 'title':
-                const titleA = 'title' in (a.movie || {}) ? (a.movie as any).title : (a.movie as any).name;
-                const titleB = 'title' in (b.movie || {}) ? (b.movie as any).title : (b.movie as any).name;
-                return (titleA || '').localeCompare(titleB || '', 'tr');
-              default:
-                return 0;
-            }
-          } catch (error) {
-            console.warn('Sort error:', error);
-            return 0;
-          }
-        });
-
-        safeSetState(setFilteredRecommendationsLocal, filtered, []);
-      };
-
-      filterRecommendations();
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'Öneri filtreleme');
-      } else {
-        handleError(new Error(String(error)), 'Öneri filtreleme');
-      }
-    }
-  }, [recommendations, recommendationFilters.sortBy, handleError, safeSetState]);
-
-  // Filter curated content when filters change with error handling
-  useEffect(() => {
-    if (!showingCuratedMovies || !Array.isArray(allMovies) || allMovies.length === 0) return;
-    
-    try {
-      const filterCuratedContent = () => {
-        let filtered = [...allMovies];
-
-        // Apply content quality filter from settings
-        if (settings?.minContentRating && typeof settings.minContentRating === 'number') {
-          filtered = filtered.filter(content => 
-            content && typeof content.vote_average === 'number' &&
-            content.vote_average >= settings.minContentRating
-          );
-        }
-
-        // Apply adult content filter from settings
-        if (settings && !settings.showAdultContent) {
-          filtered = filtered.filter(content => !('adult' in content && !!content.adult));
-        }
-
-        // Media type filter
-        if (curatedContentFilters.mediaType !== 'all') {
-          filtered = filtered.filter(content => {
-            if (!content) return false;
-            if (curatedContentFilters.mediaType === 'movie') {
-              return content.media_type === 'movie' || 'title' in content;
-            } else {
-              return content.media_type === 'tv' || 'name' in content;
-            }
-          });
-        }
-
-        // Rating filter with null checks
-        filtered = filtered.filter(content => {
-          if (!content || typeof content.vote_average !== 'number') return false;
-          return content.vote_average >= curatedContentFilters.minRating && 
-                 content.vote_average <= curatedContentFilters.maxRating;
-        });
-
-        // Year filter with null checks
-        filtered = filtered.filter(content => {
-          if (!content) return false;
-          let year: number;
-          if ('release_date' in content && content.release_date) {
-            year = new Date(content.release_date).getFullYear();
-          } else if ('first_air_date' in content && content.first_air_date) {
-            year = new Date(content.first_air_date).getFullYear();
-          } else {
-            return true;
-          }
-          
-          return year >= curatedContentFilters.minYear && year <= curatedContentFilters.maxYear;
-        });
-
-        // Vote count filter
-        filtered = filtered.filter(content => {
-          if (!content || typeof content.vote_count !== 'number') return false;
-          return content.vote_count >= curatedContentFilters.minVoteCount;
-        });
-
-        // Genre filter
-        if (Array.isArray(curatedContentFilters.genres) && curatedContentFilters.genres.length > 0) {
-          filtered = filtered.filter(content => {
-            if (!content?.genre_ids || !Array.isArray(content.genre_ids)) return false;
-            return curatedContentFilters.genres.some(genreId => 
-              content.genre_ids.includes(genreId)
-            );
-          });
-        }
-
-        // Language filter
-        if (curatedContentFilters.languages && Array.isArray(curatedContentFilters.languages) && curatedContentFilters.languages.length > 0) {
-          filtered = filtered.filter(content => {
-            if (!content?.original_language) return false;
-            return curatedContentFilters.languages!.includes(content.original_language);
-          });
-        }
-
-        // Sort with error handling
-        filtered.sort((a, b) => {
-          try {
-            let valueA: any, valueB: any;
-            
-            switch (curatedContentFilters.sortBy) {
-              case 'rating':
-                valueA = a?.vote_average || 0;
-                valueB = b?.vote_average || 0;
-                break;
-              case 'year':
-                const yearA = 'release_date' in (a || {}) ? 
-                  new Date((a as any).release_date || '').getFullYear() : 
-                  new Date((a as any).first_air_date || '').getFullYear();
-                const yearB = 'release_date' in (b || {}) ? 
-                  new Date((b as any).release_date || '').getFullYear() : 
-                  new Date((b as any).first_air_date || '').getFullYear();
-                valueA = yearA || 0;
-                valueB = yearB || 0;
-                break;
-              case 'title':
-                valueA = 'title' in (a || {}) ? (a as any).title : (a as any).name;
-                valueB = 'title' in (b || {}) ? (b as any).title : (b as any).name;
-                return curatedContentFilters.sortOrder === 'asc' 
-                  ? (valueA || '').localeCompare(valueB || '', 'tr')
-                  : (valueB || '').localeCompare(valueA || '', 'tr');
-              case 'popularity':
-                valueA = a?.vote_count || 0;
-                valueB = b?.vote_count || 0;
-                break;
-              default:
-                return 0;
-            }
-            
-            if (curatedContentFilters.sortOrder === 'asc') {
-              return valueA - valueB;
-            } else {
-              return valueB - valueA;
-            }
-          } catch (error) {
-            console.warn('Sort error:', error);
-            return 0;
-          }
-        });
-
-        safeSetState(setMoviesLocal, filtered, []);
-      };
-
-      filterCuratedContent();
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'İçerik filtreleme');
-      } else {
-        handleError(new Error(String(error)), 'İçerik filtreleme');
-      }
-    }
-  }, [allMovies, curatedContentFilters, showingCuratedMovies, settings, handleError, safeSetState]);
-
-  const loadMoviesBasedOnPhase = async (
-    _profile: UserProfile | null, 
-    _ratings: UserRating[], 
-    _movieGenres: Genre[], 
-    _tvGenres: Genre[]
-  ) => {
-    if (!Array.isArray(ratings)) {
-      console.warn('Invalid ratings array provided');
-      return;
-    }
-
-    // Arama ekranında sadece arama yapılabilsin, arama yoksa boş liste göster
-    setAllMoviesLocal([]);
-    setMoviesLocal([]);
-    setShowingCuratedMovies(false);
-  };
-
-  // AI öğrenme içeriklerini yükle (sadece AI önerileri ekranında kullanılır)
-  const loadAILearningContent = useCallback(async () => {
-    if (curatedContentLoading) return;
-    
-    setCuratedContentLoading(true);
-    setCuratedContentLoadingProgress({ current: 0, total: 10, message: 'AI öğrenme içerikleri yükleniyor...' });
-    
-    try {
-      const validRatings = Array.isArray(ratings) ? ratings : [];
-      const ratedIds = new Set(validRatings.map(r => r.movieId));
-      const watchlistIds = new Set(watchlist.map(w => w.id));
-      
-      // CuratedMovieService'den AI öğrenme içeriklerini al
-      const learningContent = await CuratedMovieService.getInitialRatingContent();
-      
-      // Puanlanmamış ve izleme listesinde olmayan içerikleri filtrele
-      const filteredContent = learningContent.filter(content => 
-        !ratedIds.has(content.id) && !watchlistIds.has(content.id)
-      );
-      
-      setCuratedContentLoadingProgress({ current: 10, total: 10, message: 'Tamamlandı!' });
-      
-      setAllMoviesLocal(filteredContent);
-      setMoviesLocal(filteredContent);
+    if (!searchQuery) {
+      cancelSearch();
       setShowingCuratedMovies(true);
-      
-    } catch (error) {
-      console.error('AI learning content loading failed:', error);
-      setError('AI öğrenme içerikleri yüklenirken hata oluştu');
+      if (searchCallbackRef.current) {
+        searchCallbackRef.current({ totalResults: 0, searchType: 'content' });
+        searchCallbackRef.current = undefined;
+      }
+      return;
+    }
+
+    search(searchQuery);
+  }, [searchQuery, cancelSearch, setShowingCuratedMovies, search]);
+
+  const searchMovies = useCallback((query: string, onSearchComplete?: (summary: SearchResultSummary) => void) => {
+    searchCallbackRef.current = onSearchComplete;
+    search(query);
+  }, [search]);
+
+  const loadInitialData = useCallback(async () => {
+    if (initialLoadRef.current) {
+      return;
+    }
+    initialLoadRef.current = true;
+
+    setLoading(true);
+    setLoadingProgress({ current: 0, total: 4, message: 'İlk veriler yükleniyor...' });
+
+    try {
+      const [genreResponse, tvGenreResponse] = await Promise.all([
+        tmdbService.fetchGenres().catch(() => []),
+        tmdbService.fetchTVGenres().catch(() => [])
+      ]);
+      safeSetState(setMovieGenres, genreResponse, []);
+      safeSetState(setTvGenres, tvGenreResponse, []);
+
+      setLoadingProgress({ current: 1, total: 4, message: 'Kullanıcı verileri yükleniyor...' });
+      const storedRatings = StorageService.getRatings() ?? [];
+      const storedProfile = StorageService.getProfile();
+      safeSetState(setRatings, storedRatings, []);
+      safeSetState(setProfile, storedProfile, null);
+      ratingsRef.current = storedRatings;
+      profileRef.current = storedProfile;
+      const syncedWatchlist = syncWatchlist();
+
+      const numericRatings = storedRatings.filter(r => typeof r.rating === 'number').length;
+
+      setLoadingProgress({ current: 2, total: 4, message: 'Keşif içerikleri yükleniyor...' });
+      const curatedContent =
+        numericRatings === 0
+          ? await CuratedMovieService.getInitialRatingContent()
+          : await CuratedMovieService.getCuratedInitialContent(
+              storedRatings,
+              undefined,
+              (syncedWatchlist ?? []).map(item => ({ id: item.id })),
+              settings?.discoveryContentCount !== undefined
+                ? { discoveryContentCount: settings.discoveryContentCount }
+                : undefined
+            );
+      replaceContent(curatedContent);
+      setShowingCuratedMovies(true);
+
+      if (numericRatings >= 10 && storedProfile) {
+        setLoadingProgress({ current: 3, total: 4, message: 'Öneriler hazırlanıyor...' });
+        const initialRecommendations = await RecommendationService.generateRecommendations(
+          storedProfile,
+          genreResponse,
+          tvGenreResponse,
+          storedRatings,
+          mergeRecommendationFilterSettings(recommendationFilters, settings),
+          settings?.recommendationCount !== undefined ? { recommendationCount: settings.recommendationCount } : undefined,
+          (syncedWatchlist ?? []).map(item => item.id)
+        );
+        replaceRecommendations(initialRecommendations);
+      }
+
+      setLoadingProgress({ current: 4, total: 4, message: 'Tamamlandı' });
+    } catch (err) {
+      handleError(err, 'İlk verileri yükleme');
     } finally {
-      setCuratedContentLoading(false);
-      setCuratedContentLoadingProgress({ current: 0, total: 0, message: '' });
+      setLoading(false);
+      setLoadingProgress(EMPTY_PROGRESS);
     }
-  }, [ratings, watchlist, curatedContentLoading]);
+  }, [
+    handleError,
+    recommendationFilters,
+    replaceContent,
+    replaceRecommendations,
+    safeSetState,
+    settings,
+    syncWatchlist,
+    setShowingCuratedMovies
+  ]);
 
-  // Watchlist management with validation
-  const removeFromWatchlist = useCallback((itemId: number) => {
-    if (typeof itemId !== 'number' || itemId <= 0) {
-      console.warn('Invalid itemId provided to removeFromWatchlist');
+  useEffect(() => {
+    loadInitialData();
+  }, [loadInitialData]);
+
+  useEffect(() => {
+    const validRatingsCount = ratings.filter(r => typeof r.rating === 'number').length;
+    if (validRatingsCount >= 10 && profile) {
+      refreshRecommendationEngine();
+    }
+  }, [ratings, profile, refreshRecommendationEngine]);
+
+  useEffect(() => {
+    if (!profile || !settings?.recommendationCount) {
       return;
     }
+    const timeout = setTimeout(() => {
+      refreshRecommendationEngine();
+    }, 500);
+    return () => clearTimeout(timeout);
+  }, [profile, settings?.recommendationCount, refreshRecommendationEngine]);
 
-    try {
-      setWatchlist(prev => {
-        const validPrev = Array.isArray(prev) ? prev : [];
-        const updated = validPrev.filter(item => item.id !== itemId);
-        StorageService.saveWatchlist(updated);
-        
-        // Note: Content will be available again in recommendations and discovery
-        // when the lists are refreshed or regenerated
-        return updated;
-      });
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'İzleme listesinden çıkarma');
-      } else {
-        handleError(new Error(String(error)), 'İzleme listesinden çıkarma');
-      }
-    }
-  }, [handleError]);
-
-  const addToWatchlist = useCallback((content: Movie | TVShow) => {
-    if (!content || typeof content.id !== 'number' || content.id <= 0) {
-      console.warn('Invalid content provided to addToWatchlist');
+  useEffect(() => {
+    if (!settings?.discoveryContentCount) {
       return;
     }
+    const timeout = setTimeout(() => {
+      refreshDiscoveryContent(ratingsRef.current);
+    }, 500);
+    return () => clearTimeout(timeout);
+  }, [settings?.discoveryContentCount, refreshDiscoveryContent]);
 
+  const getUserRating = useCallback((itemId: number): RatingValue | null => {
+    return ratings.find(r => r.movieId === itemId)?.rating ?? null;
+  }, [ratings]);
+
+  const rateMovie = useCallback(async (itemId: number, rating: RatingValue, mediaType: 'movie' | 'tv' = 'movie') => {
     try {
-      setWatchlist(prev => {
-        const validPrev = Array.isArray(prev) ? prev : [];
-        const exists = validPrev.some(item => item.id === content.id);
-        if (!exists) {
-          const updated = [
-            ...validPrev,
-            { id: content.id, content, addedAt: Date.now() }
-          ];
-          StorageService.saveWatchlist(updated);
-          
-          // Cache the watchlisted content
-          const mediaType = 'media_type' in content && content.media_type === 'tv' ? 'tv' : 'movie';
-          tmdbService.cacheUserContent(content.id, mediaType);
-          
-          return updated;
+      const existing = ratingsRef.current.filter(r => r.movieId !== itemId);
+      const nextRatings: UserRating[] = [
+        ...existing,
+        {
+          movieId: itemId,
+          rating,
+          timestamp: Date.now(),
+          mediaType
         }
-        return validPrev;
-      });
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'İzleme listesine ekleme');
-      } else {
-        handleError(new Error(String(error)), 'İzleme listesine ekleme');
-      }
-    }
-  }, [handleError]);
+      ];
 
-  const isInWatchlist = useCallback((itemId: number): boolean => {
-    if (typeof itemId !== 'number' || itemId <= 0) return false;
-    return Array.isArray(watchlist) && watchlist.some(item => item.id === itemId);
-  }, [watchlist]);
+      setRatings(nextRatings);
+      StorageService.saveRatings(nextRatings);
 
-  // Enhanced rate function with validation
-  const rateMovie = useCallback(async (itemId: number, rating: number | 'not_watched' | 'not_interested' | 'skip', mediaType: 'movie' | 'tv' = 'movie') => {
-    if (loadingRef.current) return;
-    
-    // Validation
-    if (typeof itemId !== 'number' || itemId <= 0) {
-      console.warn('Invalid itemId provided to rateMovie');
-      return;
-    }
-
-    if (typeof rating === 'number' && (rating < 1 || rating > 10)) {
-      console.warn('Invalid rating provided to rateMovie');
-      return;
-    }
-
-    if (!['movie', 'tv'].includes(mediaType)) {
-      console.warn('Invalid mediaType provided to rateMovie');
-      return;
-    }
-
-    try {
-      const validRatings = Array.isArray(ratings) ? ratings : [];
-      
-      // Check if rating already exists
-      const existingRatingIndex = validRatings.findIndex(r => r.movieId === itemId);
-      const existingRating = existingRatingIndex >= 0 ? validRatings[existingRatingIndex] : null;
-      
-      const newRatings = validRatings.filter(r => r.movieId !== itemId);
-      newRatings.push({
-        movieId: itemId,
-        rating,
-        timestamp: Date.now(),
-        mediaType
-      });
-
-      safeSetState(setRatings, newRatings, []);
-      StorageService.saveRatings(newRatings);
-
-      // Cache the rated content
       if (rating !== 'skip') {
         tmdbService.cacheUserContent(itemId, mediaType);
       }
 
-      // Remove from watchlist if rated (except for skip/not_interested)
       if (rating !== 'not_watched' && rating !== 'skip') {
         removeFromWatchlist(itemId);
       }
 
-      let currentProfile = profile;
-
-      // Update profile if enough valid ratings
-      const validNewRatings = newRatings.filter(r => 
-        r.rating !== 'not_watched' && 
-        r.rating !== 'not_interested' && 
-        r.rating !== 'skip'
-      );
-      
-      // Anında UI güncellemesi - puanlanan filmi listeden kaldır
-      setAllMoviesLocal((prev: any) => Array.isArray(prev) ? prev.filter((movie: any) => movie.id !== itemId) : []);
-      setMoviesLocal((prev: any) => Array.isArray(prev) ? prev.filter((movie: any) => movie.id !== itemId) : []);
-      setRecommendationsLocal((prev: any) => Array.isArray(prev) ? prev.filter((rec: any) => rec.id !== itemId) : []);
-      setFilteredRecommendationsLocal((prev: any) => Array.isArray(prev) ? prev.filter((rec: any) => rec.id !== itemId) : []);
-      
-      // 10 puanlama sonrası AI önerilerini başlat
-      if (validNewRatings.length === 10 && !Array.isArray(recommendations) || recommendations.length === 0) {
+      const validRatings = nextRatings.filter(r => typeof r.rating === 'number');
+      if (validRatings.length >= 1) {
         try {
-          console.log('10 puanlama tamamlandı! AI önerileri başlatılıyor...');
-          const watchlistIds = watchlist.map(w => w.id);
-          const recs = await RecommendationService.generateRecommendations(
-            currentProfile!, 
-            genres, 
-            tvGenres,
-            newRatings,
-            { ...recommendationFilters, showKidsContent: settings?.showKidsContent ?? false, showAnimationContent: settings?.showAnimationContent ?? true, showAnimeContent: settings?.showAnimeContent ?? true },
-            settings?.recommendationCount !== undefined ? { recommendationCount: settings.recommendationCount } : {},
-            watchlistIds
+          const generatedProfile = await ProfileService.generateProfile(nextRatings);
+          if (generatedProfile) {
+            setProfile(generatedProfile);
+            profileRef.current = generatedProfile;
+          }
+        } catch (err) {
+          console.warn('Profile generation failed:', err);
+        }
+      }
+
+      removeContentById(itemId);
+      replaceRecommendations(
+        recommendations.filter(rec => rec.movie.id !== itemId)
+      );
+
+      if (validRatings.length >= 3 && profileRef.current) {
+        try {
+          const learningEvent = {
+            type: 'rating_added' as const,
+            contentId: itemId,
+            newRating: rating,
+            mediaType
+          };
+          const learningResult = await RealTimeLearningService.processRatingEvent(
+            learningEvent,
+            profileRef.current,
+            nextRatings
           );
-          safeSetState(setRecommendationsLocal, recs, []);
-          safeSetState(setFilteredRecommendationsLocal, recs, []);
-        } catch (error) {
-          console.warn('Initial AI recommendations failed:', error);
-        }
-      }
-
-      // 20 puanlama sonrası neural network eğitimini başlat
-      if (validNewRatings.length === 20 && currentProfile) {
-        try {
-          console.log('20 puanlama tamamlandı! Neural network eğitimi başlatılıyor...');
-          const { NeuralRecommendationService } = await import('../services/neuralRecommendationService');
-          await NeuralRecommendationService.trainModel(newRatings, currentProfile);
-          console.log('Neural network eğitimi tamamlandı!');
-        } catch (error) {
-          console.warn('Neural network training failed:', error);
-        }
-      }
-
-      // Her 10 puanlama sonrası neural network eğitimini güncelle (20'den sonra)
-      if (validNewRatings.length >= 20 && validNewRatings.length % 10 === 0 && currentProfile) {
-        try {
-          console.log(`${validNewRatings.length} puanlama tamamlandı! Neural network güncelleniyor...`);
-          const { NeuralRecommendationService } = await import('../services/neuralRecommendationService');
-          await NeuralRecommendationService.trainModel(newRatings, currentProfile);
-          console.log('Neural network güncelleme tamamlandı!');
-        } catch (error) {
-          console.warn('Neural network update failed:', error);
-        }
-      }
-
-      // Gerçek zamanlı öğrenme eşiğini 3'e düşür
-      if (validNewRatings.length >= 3) {
-        try {
-          // Process real-time learning event
-          if (currentProfile) {
-            const learningEvent = {
-              type: (existingRatingIndex >= 0 ? 'rating_updated' : 'rating_added') as 'rating_updated' | 'rating_added',
-              contentId: itemId,
-              oldRating: existingRating?.rating,
-              newRating: rating,
-              mediaType
-            };
-
-            try {
-              const learningResult = await RealTimeLearningService.processRatingEvent(
-                learningEvent,
-                currentProfile,
-                newRatings
-              );
-
-              // Show learning insights if available
-              if (learningResult.learningInsights.length > 0) {
-                console.log('Learning insights:', learningResult.learningInsights);
-              }
-
-              // Retrain neural network if needed
-              if (learningResult.shouldRetrainNeural) {
-                await RealTimeLearningService.retrainNeuralNetworkIfNeeded(
-                  true,
-                  newRatings,
-                  learningResult.updatedProfile
-                );
-              }
-
-            } catch (learningError) {
-              console.warn('Real-time learning failed, falling back to standard update:', learningError);
-              
-              // Fallback to standard profile update
-              const newProfile = await ProfileService.generateProfile(newRatings);
-              if (newProfile) {
-                currentProfile = newProfile;
-                safeSetState(setProfile, newProfile, null);
-              }
-            }
-          } else {
-            // No profile yet, use standard update
-            const newProfile = await ProfileService.generateProfile(newRatings);
-            if (newProfile) {
-              currentProfile = newProfile;
-              safeSetState(setProfile, newProfile, null);
-            }
+          if (learningResult.shouldRetrainNeural) {
+            await RealTimeLearningService.retrainNeuralNetworkIfNeeded(
+              true,
+              nextRatings,
+              learningResult.updatedProfile
+            );
           }
-        } catch (error) {
-          console.warn('Profile generation failed:', error);
-        }
-      } else if (validNewRatings.length >= 1) {
-        // 1-2 puanlama için basit profil güncellemesi
-        try {
-          const newProfile = await ProfileService.generateProfile(newRatings);
-          if (newProfile) {
-            currentProfile = newProfile;
-            safeSetState(setProfile, newProfile, null);
-          }
-        } catch (error) {
-          console.warn('Simple profile generation failed:', error);
+        } catch (err) {
+          console.warn('Real-time learning failed:', err);
         }
       }
-
-      // Update movie list based on context - sadece puanlanan filmi kaldır, listeyi yeniden yükleme
-      if (!searchQuery) {
-        const currentPhase = currentProfile?.learningPhase || LearningService.determineLearningPhase(newRatings);
-        
-        if (currentPhase === 'testing') {
-          // Test aşamasında sadece 2 film kaldıysa yeni içerik yükle
-          const updatedMovies = Array.isArray(movies) ? movies.filter(movie => movie.id !== itemId) : [];
-          if (updatedMovies.length <= 2 && currentProfile) {
-            setLoading(true);
-            loadingRef.current = true;
-            try {
-              const newTestContent = await LearningService.generateTestRecommendations(
-                currentProfile, 
-                genres,
-                tvGenres,
-                newRatings, 
-                setLoadingProgress
-              );
-              safeSetState(setAllMoviesLocal, newTestContent, []);
-              safeSetState(setMoviesLocal, newTestContent, []);
-            } catch (error) {
-              if (error instanceof Error) {
-                handleError(error, 'Yeni test içeriği yükleme');
-              } else {
-                handleError(new Error(String(error)), 'Yeni test içeriği yükleme');
-              }
-            } finally {
-              setLoading(false);
-              loadingRef.current = false;
-            }
-          }
-        }
-        // Diğer aşamalarda sadece puanlanan filmi kaldır, listeyi yeniden yükleme
-      } else {
-        // Search mode - just remove rated item
-        setAllMoviesLocal((prev: any) => Array.isArray(prev) ? prev.filter((movie: any) => movie.id !== itemId) : []);
-        setMoviesLocal((prev: any) => Array.isArray(prev) ? prev.filter((movie: any) => movie.id !== itemId) : []);
-      }
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'Puanlama');
-      } else {
-        handleError(new Error(String(error)), 'Puanlama');
-      }
+    } catch (err) {
+      handleError(err, 'Puanlama');
     }
-  }, [ratings, profile, genres, tvGenres, searchQuery, allMovies, movies, removeFromWatchlist, handleError, safeSetState]);
+  }, [handleError, recommendations, removeContentById, removeFromWatchlist, replaceRecommendations, refreshRecommendationEngine, setRatings]);
 
-  // Refresh recommendations with error handling
-  const refreshRecommendations = useCallback(async () => {
-    if (!profile || recommendationsLoading) return;
-    
-    setRecommendationsLoading(true);
-    setRecommendationsLoadingProgress({ current: 0, total: 3, message: 'Filtrelere göre yeni öneriler hazırlanıyor...' });
-    setError(null);
-    
-    try {
-      setRecommendationsLoadingProgress({ current: 1, total: 3, message: 'Filtrelere göre öneriler hesaplanıyor...' });
-      
-      // Filtreleri kullanarak yeni öneriler oluştur
-      const newRecs = await RecommendationService.generateRecommendations(
-        profile, 
-        genres, 
-        tvGenres,
-        ratings,
-        recommendationFilters, // Filtreleri geçir
-        settings?.recommendationCount !== undefined ? { recommendationCount: settings.recommendationCount } : {} // Ayarları geçir
-      );
-      
-      // Filtrelenmiş önerileri doğrudan set et
-      setRecommendationsLocal(newRecs);
-      setFilteredRecommendationsLocal(newRecs);
-      
-      setRecommendationsLoadingProgress({ current: 3, total: 3, message: 'Tamamlandı!' });
-      
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'Öneri yenileme');
-      } else {
-        handleError(new Error(String(error)), 'Öneri yenileme');
-      }
-    } finally {
-      setRecommendationsLoading(false);
-      setRecommendationsLoadingProgress({ current: 0, total: 0, message: '' });
-    }
-  }, [profile, genres, tvGenres, ratings, recommendationFilters, handleError, safeSetState, recommendationsLoading]);
+  const refreshRecommendations = useCallback(() => {
+    return refreshRecommendationEngine();
+  }, [refreshRecommendationEngine]);
 
-  // Refresh curated content with filters
-  const refreshCuratedContent = useCallback(async () => {
-    if (curatedContentLoading) return;
-    
-    setCuratedContentLoading(true);
-    setCuratedContentLoadingProgress({ current: 0, total: 3, message: 'Filtrelere göre yeni keşif içerikleri hazırlanıyor...' });
-    setError(null);
-    
+  const refreshCuratedContent = useCallback(() => {
+    return refreshDiscoveryContent(ratingsRef.current);
+  }, [refreshDiscoveryContent]);
+
+  const loadAILearningContent = useCallback(async () => {
+    setLoading(true);
+    setLoadingProgress({ current: 0, total: 2, message: 'Öğrenme içerikleri hazırlanıyor...' });
+
     try {
-      setCuratedContentLoadingProgress({ current: 1, total: 3, message: 'Filtrelere göre içerikler aranıyor...' });
-      
-      // Filtreleri kullanarak yeni keşif içerikleri al
-      const newContent = await CuratedMovieService.getCuratedContentWithFilters(
-        ratings,
-        curatedContentFilters
-      );
-      
-      safeSetState(setAllMoviesLocal, newContent, []);
-      safeSetState(setMoviesLocal, newContent, []);
+      const ratedIds = new Set(ratingsRef.current.map(r => r.movieId));
+      watchlistIds.forEach(id => ratedIds.add(id));
+
+      const learningContent = await CuratedMovieService.getInitialRatingContent();
+      const filteredContent = learningContent.filter(item => !ratedIds.has(item.id));
+
+      setLoadingProgress({ current: 2, total: 2, message: 'Öğrenme içerikleri hazır!' });
+      replaceContent(filteredContent);
       setShowingCuratedMovies(true);
-      
-      setCuratedContentLoadingProgress({ current: 3, total: 3, message: 'Tamamlandı!' });
-      
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'Keşif içerikleri yenileme');
-      } else {
-        handleError(new Error(String(error)), 'Keşif içerikleri yenileme');
-      }
+      return filteredContent;
+    } catch (err) {
+      handleError(err, 'Öğrenme içerikleri yükleme');
+      return [];
     } finally {
-      setCuratedContentLoading(false);
-      setCuratedContentLoadingProgress({ current: 0, total: 0, message: '' });
+      setLoading(false);
+      setLoadingProgress(EMPTY_PROGRESS);
     }
-  }, [ratings, curatedContentFilters, genres, tvGenres, handleError, safeSetState, curatedContentLoading]);
+  }, [handleError, replaceContent, setShowingCuratedMovies, watchlistIds]);
 
-  // Get user rating with validation
-  const getUserRating = useCallback((itemId: number): number | 'not_watched' | 'not_interested' | 'skip' | null => {
-    if (typeof itemId !== 'number' || itemId <= 0) return null;
-    if (!Array.isArray(ratings)) return null;
-    
-    const rating = ratings.find(r => r && r.movieId === itemId);
-    return rating ? rating.rating : null;
-  }, [ratings]);
-
-  // Data management functions with validation
-  const exportData = useCallback((): string => {
+  const exportData = useCallback(() => {
     try {
       return StorageService.exportData();
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'Veri dışa aktarma');
-      } else {
-        handleError(new Error(String(error)), 'Veri dışa aktarma');
-      }
+    } catch (err) {
+      handleError(err, 'Veri dışa aktarma');
       return '{}';
     }
   }, [handleError]);
 
-  const importData = useCallback(async (jsonData: string): Promise<boolean> => {
+  const importData = useCallback(async (data: string) => {
     try {
-      const success = await StorageService.importData(jsonData);
+      const success = await StorageService.importData(data);
       if (success) {
-        setRatings(StorageService.getRatings());
-        setWatchlist(StorageService.getWatchlist());
-        setProfile(StorageService.getProfile());
-        // Optionally refresh recommendations, movies, etc.
-        // You may want to call refreshRecommendations() or similar here
+        safeSetState(setRatings, StorageService.getRatings() ?? [], []);
+        safeSetState(setProfile, StorageService.getProfile(), null);
+        syncWatchlist();
+        await refreshRecommendations();
+        await refreshCuratedContent();
       }
       return success;
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'Veri içe aktarma');
-      } else {
-        handleError(new Error(String(error)), 'Veri içe aktarma');
-      }
+    } catch (err) {
+      handleError(err, 'Veri içe aktarma');
       return false;
     }
-  }, [handleError]);
+  }, [handleError, refreshCuratedContent, refreshRecommendations, safeSetState, syncWatchlist]);
 
   const clearData = useCallback(async () => {
     try {
-      // Clear all storage data
       StorageService.clearAllData();
-      
-      // Clear real-time learning history
       RealTimeLearningService.clearLearningHistory();
-      
-      // Reset all state variables immediately
-      setRatings([]);
-      setWatchlist([]);
-      setProfile(null);
-      setRecommendationsLocal([]);
-      setFilteredRecommendationsLocal([]);
-      setAllMoviesLocal([]);
-      setMoviesLocal([]);
-      setSearchQueryLocal('');
-      setShowingCuratedMovies(true);
-      
-      // Reset filters to defaults
-      setRecommendationFiltersLocal({
-        genres: [],
-        minYear: 1950,
-        maxYear: new Date().getFullYear(),
-        minRating: 0,
-        maxRating: 10,
-        mediaType: 'all',
-        sortBy: 'match_score',
-        minMatchScore: 0,
-        languages: [],
-        showKidsContent: false,
-        showAnimationContent: true,
-        showAnimeContent: true
-      });
-      setCuratedContentFiltersLocal({
-        mediaType: 'all',
-        minRating: 0,
-        maxRating: 10,
-        minYear: 1900,
-        maxYear: new Date().getFullYear(),
-        genres: [],
-        sortBy: 'rating',
-        sortOrder: 'desc',
-        minVoteCount: 0,
-        languages: []
-      });
-      setShowCuratedFiltersLocal(false);
-      
-      // Reset loading states
-      setLoading(false);
-      loadingRef.current = false;
-      setRecommendationsLoading(false);
-      setCuratedContentLoading(false);
-      setError(null);
-      
-      // Clear localStorage items
-      localStorage.removeItem('searchQuery');
-      localStorage.removeItem('showingCuratedMovies');
-      localStorage.removeItem('recommendationFilters');
-      localStorage.removeItem('curatedContentFilters');
-      localStorage.removeItem('onboardingCompleted');
-      localStorage.removeItem('onboardingState');
-      
-      // Load initial curated content
-      setLoading(true);
-      loadingRef.current = true;
-      try {
-        const curatedContent = await CuratedMovieService.getCuratedInitialContent([], undefined, [], 
-          {}
-        );
-        safeSetState(setAllMoviesLocal, curatedContent, []);
-        safeSetState(setMoviesLocal, curatedContent, []);
-        setShowingCuratedMovies(true);
-      } catch (error) {
-        if (error instanceof Error) {
-          handleError(error, 'Varsayılan içerik yükleme');
-        } else {
-          handleError(new Error(String(error)), 'Varsayılan içerik yükleme');
-        }
-      } finally {
-        setLoading(false);
-        loadingRef.current = false;
-      }
-      
-      console.log('All data cleared and system reset to initial state');
-    } catch (error) {
-      if (error instanceof Error) {
-        handleError(error, 'Veri temizleme');
-      } else {
-        handleError(new Error(String(error)), 'Veri temizleme');
-      }
-    }
-  }, [handleError, safeSetState]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
+      setRatings([]);
+      clearWatchlist();
+      setProfile(null);
+      clearRecommendations();
+      replaceContent([]);
+      setSearchQuery('');
+      setShowingCuratedMovies(true);
+      resetRecommendationFilters();
+      resetCuratedContentFilters();
+      setShowCuratedFilters(false);
+
+      try {
+        localStorage.removeItem('searchQuery');
+        localStorage.removeItem('showingCuratedMovies');
+        localStorage.removeItem('recommendationFilters');
+        localStorage.removeItem('curatedContentFilters');
+        localStorage.removeItem('onboardingCompleted');
+        localStorage.removeItem('onboardingState');
+      } catch (storageError) {
+        console.warn('Failed to clear local storage keys:', storageError);
       }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-    };
-  }, []);
+
+      await loadInitialData();
+    } catch (err) {
+      handleError(err, 'Veri temizleme');
+    }
+  }, [clearWatchlist, clearRecommendations, handleError, loadInitialData, replaceContent, resetCuratedContentFilters, resetRecommendationFilters, setSearchQuery, setShowCuratedFilters, setShowingCuratedMovies]);
 
   return {
     user: null,
@@ -1345,27 +562,47 @@ export const useMovieData = (settings?: AppSettings) => {
     rateMovie,
     removeRating: undefined,
     updateProfile: undefined,
-    movies: Array.isArray(movies) ? movies : [],
-    allMovies: Array.isArray(allMovies) ? allMovies : [],
-    genres: [...(Array.isArray(genres) ? genres : []), ...(Array.isArray(tvGenres) ? tvGenres : [])],
-    recommendations: Array.isArray(recommendations) ? recommendations : [],
-    filteredRecommendations: Array.isArray(filteredRecommendations) ? filteredRecommendations : [],
-    loading,
+    movies,
+    allMovies,
+    genres: combinedGenres,
+    recommendations,
+    filteredRecommendations,
+    loading: loading || isSearching,
     _loadingProgress: loadingProgress,
     recommendationsLoading,
     recommendationsLoadingProgress,
     curatedContentLoading,
     curatedContentLoadingProgress,
-    searchQuery: searchQuery || '',
+    searchQuery,
     showingCuratedMovies,
     recommendationFilters,
-    curatedContentFilters,
+    curatedContentFilters: curatedContentFilters as CuratedContentFilters,
     showCuratedFilters,
     error,
-    setSearchQuery: stableSetSearchQuery,
-    setRecommendationFilters: stableSetRecommendationFilters,
-    setCuratedContentFilters: stableSetCuratedContentFilters,
-    setShowCuratedFilters: stableSetShowCuratedFilters,
+    setSearchQuery,
+    setRecommendationFilters: (value: SetStateAction<RecommendationFiltersState>) => {
+      setRecommendationFiltersState(prevFilters => {
+        const nextFilters =
+          typeof value === 'function'
+            ? (value as (current: RecommendationFiltersState) => RecommendationFiltersState)(prevFilters)
+            : value;
+
+        const shouldRefresh =
+          hasMeaningfulRecommendationFilterChange(prevFilters, nextFilters) &&
+          profileRef.current &&
+          ratingsRef.current.filter(r => typeof r.rating === 'number').length >= 10;
+
+        if (shouldRefresh) {
+          setTimeout(() => {
+            refreshRecommendationEngine();
+          }, 0);
+        }
+
+        return nextFilters;
+      });
+    },
+    setCuratedContentFilters,
+    setShowCuratedFilters,
     searchMovies,
     getUserRating,
     isInWatchlist,
@@ -1375,5 +612,5 @@ export const useMovieData = (settings?: AppSettings) => {
     refreshRecommendations,
     refreshCuratedContent,
     loadAILearningContent
-  };
+  } as const;
 };
