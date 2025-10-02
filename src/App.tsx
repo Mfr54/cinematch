@@ -176,18 +176,10 @@ function App() {
     }
   }, [clearData]);
 
-  const handleOnboardingComplete = useCallback((redirectToSettings?: boolean) => {
-    // Onboarding tamamlandığını localStorage'a kaydet
+  const handleOnboardingComplete = useCallback(() => {
     localStorage.setItem('onboardingCompleted', 'true');
     setShowOnboarding(false);
-    
-    if (redirectToSettings) {
-      // İlk kurulum için ayarlar sayfasına yönlendir
-      setActiveTab('settings');
-    } else {
-      // Normal durumda AI önerileri ekranına git
-      setActiveTab('recommendations');
-    }
+    setActiveTab('recommendations');
   }, []);
 
   // Başka bir sekmede veya BFI gibi farklı bir bileşende puan verildiğinde ratings'i anında güncelle
@@ -223,31 +215,22 @@ function App() {
     }
   }, [activeTab, hasEnoughRatingsForAI, curatedContentLoading, movies.length, loadAILearningContent]);
 
-  // Onboarding kontrolü - hiç puanlama yoksa ve onboarding tamamlanmamışsa onboarding'i başlat
   useEffect(() => {
-    const validRatings = (ratings || []).filter(r => 
-      r.rating !== 'not_watched' && 
-      r.rating !== 'not_interested' && 
+    const validRatings = (ratings || []).filter(r =>
+      r.rating !== 'not_watched' &&
+      r.rating !== 'not_interested' &&
       r.rating !== 'skip' &&
-      typeof r.rating === 'number' && 
-      r.rating >= 1 && 
+      typeof r.rating === 'number' &&
+      r.rating >= 1 &&
       r.rating <= 10
     );
-    
-    // Onboarding tamamlanma durumunu kontrol et
+
     const onboardingCompleted = localStorage.getItem('onboardingCompleted') === 'true';
-    
-    // Eğer hiç geçerli puanlama yoksa ve onboarding tamamlanmamışsa onboarding'i başlat
-    if (validRatings.length === 0 && !onboardingCompleted && !showOnboarding) {
+
+    if (validRatings.length === 0 && !onboardingCompleted) {
       setShowOnboarding(true);
     }
-    
-    // Eğer onboarding tamamlanmışsa ama hiç puanlama yoksa, onboarding'i tekrar başlat
-    if (validRatings.length === 0 && onboardingCompleted && !showOnboarding) {
-      localStorage.removeItem('onboardingCompleted');
-      setShowOnboarding(true);
-    }
-  }, [ratings, showOnboarding]);
+  }, [ratings]);
 
   const phaseInfo = getPhaseInfo();
 
@@ -425,11 +408,6 @@ function App() {
           <SettingsPage
             settings={settings}
             onSettingsChange={updateSettings}
-            isInitialSetup={localStorage.getItem('needsInitialSetup') === 'true'}
-            onInitialSetupComplete={() => {
-              localStorage.removeItem('needsInitialSetup');
-              setActiveTab('recommendations');
-            }}
           />
         ) : (
           <main className="flex-1 p-0">
@@ -662,7 +640,7 @@ function App() {
                   </div>
                 )}
 
-                {activeTab === 'profile' && (
+                {activeTab === 'profile' && profile && (
                   <div>
                     <ProfileSection
                       profile={profile}

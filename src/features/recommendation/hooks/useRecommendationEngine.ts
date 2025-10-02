@@ -196,7 +196,7 @@ export const useRecommendationEngine = ({
       return () => clearTimeout(timeout);
     }
 
-    refreshRecommendations();
+    void refreshRecommendations();
   }, [filters, refreshRecommendations, shouldRequest, loading]);
 
   return {
