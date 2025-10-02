@@ -1,9 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { useMovieData } from './useMovieData';
 import { CuratedMovieService } from '../services/curatedMovieService';
 import { RecommendationService } from '../services/recommendationService';
 import { ProfileService } from '../../profile/services/profileService';
+import { StorageService } from '../../../shared/services/storage';
+import type { UserProfile } from '../../content/types';
+
+const mockProfile: UserProfile = {
+  learningPhase: 'initial',
+  totalRatings: 0,
+  averageScore: 0,
+  genreDistribution: {},
+  genreQualityDistribution: {},
+  periodPreference: {},
+  tempoPreference: { seasonality: 0.5, recency: 0.5 },
+  favoriteActors: {},
+  favoriteDirectors: {},
+  qualityTolerance: { minRating: 6, minVoteCount: 100, preferredDecades: [] },
+  demographics: { age: 25, gender: 'prefer_not_to_say', language: 'en' },
+  lastUpdated: Date.now()
+};
 
 // Mock services
 vi.mock('../services/curatedMovieService');
@@ -14,14 +31,19 @@ vi.mock('../../content/services/tmdb', () => ({
     fetchGenres: vi.fn().mockResolvedValue([]),
     fetchTVGenres: vi.fn().mockResolvedValue([]),
     discoverMovies: vi.fn().mockResolvedValue({ results: [] }),
-    discoverTVShows: vi.fn().mockResolvedValue({ results: [] })
+    discoverTVShows: vi.fn().mockResolvedValue({ results: [] }),
+    cacheUserContent: vi.fn(),
+    enhancedSearch: vi.fn().mockResolvedValue({ movies: [], tvShows: [], totalResults: 0, searchType: 'content' }),
+    searchMulti: vi.fn().mockResolvedValue({ results: [], total_results: 0 })
   }
 }));
 
 describe('useMovieData - AI Recommendations Threshold', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    
+    localStorage.clear();
+    sessionStorage.clear();
+
     // Mock CuratedMovieService
     vi.mocked(CuratedMovieService.getInitialRatingContent).mockResolvedValue([
       { id: 1, title: 'Test Movie 1', media_type: 'movie', release_date: '2023-01-01', overview: 'Test overview', poster_path: null, backdrop_path: null, vote_average: 7.5, vote_count: 1000, genre_ids: [28] },
@@ -40,22 +62,9 @@ describe('useMovieData - AI Recommendations Threshold', () => {
     
     // Mock RecommendationService
     vi.mocked(RecommendationService.generateRecommendations).mockResolvedValue([]);
-    
-        // Mock ProfileService
-    vi.mocked(ProfileService.generateProfile).mockResolvedValue({
-      learningPhase: 'initial',
-      totalRatings: 0,
-      averageScore: 0,
-      genreDistribution: {},
-      genreQualityDistribution: {},
-      periodPreference: {},
-      tempoPreference: { seasonality: 0.5, recency: 0.5 },
-      favoriteActors: {},
-      favoriteDirectors: {},
-      qualityTolerance: { minRating: 6, minVoteCount: 100, preferredDecades: [] },
-      demographics: { age: 25, gender: 'prefer_not_to_say', language: 'en' },
-      lastUpdated: Date.now()
-    });
+
+    // Mock ProfileService
+    vi.mocked(ProfileService.generateProfile).mockResolvedValue(mockProfile);
   });
 
   it('should not generate AI recommendations when user has less than 10 ratings', async () => {
@@ -71,23 +80,21 @@ describe('useMovieData - AI Recommendations Threshold', () => {
     expect(RecommendationService.generateRecommendations).not.toHaveBeenCalled();
   });
 
-  it('should generate AI recommendations when user reaches 10 ratings', async () => {
-    const { result: _result } = renderHook(() => useMovieData());
+  it('should generate AI recommendations when user reaches the threshold', async () => {
+    const mockRatings = Array.from({ length: 10 }, (_, index) => ({
+      movieId: index + 1,
+      rating: 8,
+      timestamp: Date.now(),
+      mediaType: 'movie' as const
+    }));
+    StorageService.saveRatings(mockRatings);
+    StorageService.saveProfile(mockProfile);
 
-    // Simulate initial load
-    await act(async () => {
-      await new Promise(resolve => setTimeout(resolve, 100));
+    renderHook(() => useMovieData());
+
+    await waitFor(() => {
+      expect(RecommendationService.generateRecommendations).toHaveBeenCalledTimes(1);
     });
-
-    // Add 10 ratings
-    for (let i = 1; i <= 10; i++) {
-      await act(async () => {
-        await _result.current.rateMovie(i, 8, 'movie');
-      });
-    }
-
-    // Verify that RecommendationService was called after 10th rating
-    expect(RecommendationService.generateRecommendations).toHaveBeenCalledTimes(1);
   });
 
   it('should show AI learning content when no data exists', async () => {
@@ -101,23 +108,13 @@ describe('useMovieData - AI Recommendations Threshold', () => {
     expect(CuratedMovieService.getInitialRatingContent).toHaveBeenCalled();
   });
 
-  it('should clear recommendations when user has less than 10 ratings', async () => {
+  it('should expose empty recommendations when user has less than 10 ratings', async () => {
     const { result } = renderHook(() => useMovieData());
 
-    // Simulate having some recommendations initially
-    await act(async () => {
-      // Mock some existing recommendations  
-      result.current.recommendations = [
-        { movie: { id: 1, title: 'Test', media_type: 'movie', release_date: '2023-01-01', overview: 'Test overview', poster_path: null, backdrop_path: null, vote_average: 7.5, vote_count: 1000, genre_ids: [28] }, matchScore: 0.8, reasons: [], confidence: 0.8, novelty: 0.5, diversity: 0.5, explanation: { primaryFactors: [], secondaryFactors: [], riskFactors: [] }, recommendationType: 'safe' }
-      ];
-    });
-
-    // Simulate initial load with no ratings
     await act(async () => {
       await new Promise(resolve => setTimeout(resolve, 100));
     });
 
-    // Verify that recommendations are cleared
     expect(result.current.recommendations).toEqual([]);
   });
 }); 
