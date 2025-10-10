@@ -106,6 +106,7 @@ export const useRecommendationEngine = ({
   const [progress, setProgress] = useState({ current: 0, total: 0, message: '' });
   const filtersRef = useRef(filters);
   const filtersBootstrappedRef = useRef(false);
+  const pendingRefreshRef = useRef(false);
 
   const shouldRequest = useMemo(() => {
     return Boolean(profile);
@@ -126,9 +127,17 @@ export const useRecommendationEngine = ({
   }, []);
 
   const refreshRecommendations = useCallback(async () => {
-    if (!shouldRequest || loading) {
+    if (!shouldRequest) {
+      pendingRefreshRef.current = false;
       return undefined;
     }
+
+    if (loading) {
+      pendingRefreshRef.current = true;
+      return undefined;
+    }
+
+    pendingRefreshRef.current = false;
 
     setLoading(true);
     setProgress({ current: 0, total: 3, message: 'Öneriler hazırlanıyor...' });
@@ -172,6 +181,13 @@ export const useRecommendationEngine = ({
   ]);
 
   useEffect(() => {
+    if (!loading && pendingRefreshRef.current) {
+      pendingRefreshRef.current = false;
+      refreshRecommendations();
+    }
+  }, [loading, refreshRecommendations]);
+
+  useEffect(() => {
     if (!filtersBootstrappedRef.current) {
       filtersBootstrappedRef.current = true;
       filtersRef.current = filters;
@@ -189,15 +205,8 @@ export const useRecommendationEngine = ({
       return;
     }
 
-    if (loading) {
-      const timeout = setTimeout(() => {
-        refreshRecommendations();
-      }, 200);
-      return () => clearTimeout(timeout);
-    }
-
     refreshRecommendations();
-  }, [filters, refreshRecommendations, shouldRequest, loading]);
+  }, [filters, refreshRecommendations, shouldRequest]);
 
   return {
     recommendations,
